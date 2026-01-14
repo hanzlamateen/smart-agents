@@ -85,7 +85,8 @@ services:
       context: ./worker
       dockerfile: Dockerfile
     image: smart-agents-worker:latest
-    profiles: ["build_only"]
+    deploy:
+      replicas: 0  # Don't create any container instances - just build the image
     networks:
       - smart_agents_net
 
