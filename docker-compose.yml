@@ -1,0 +1,110 @@
+version: "3.8"
+
+services:
+  db:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: smart_agents
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    command: --sort_buffer_size=4M
+    networks:
+      - smart_agents_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - smart_agents_net
+
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin; do
+        echo 'Waiting for MinIO...';
+        sleep 1;
+      done;
+      /usr/bin/mc mb --ignore-existing myminio/smart-agents-images;
+      /usr/bin/mc anonymous set public myminio/smart-agents-images;
+      exit 0;
+      "
+    networks:
+      - smart_agents_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: smart-agents-backend:latest
+    user: root # Required for Docker Socket access
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - DATABASE_URL=mysql+pymysql://user:password@db/smart_agents
+      - API_PROVIDER=anthropic
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET_NAME=smart-agents-images
+      - S3_PUBLIC_URL=http://localhost:9000
+      - SSH_ENCRYPTION_KEY=${SSH_ENCRYPTION_KEY} # Must be provided in .env
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - smart_agents_net
+
+  # Service just to build the worker image
+  worker_image:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    image: smart-agents-worker:latest
+    profiles: ["build_only"]
+    networks:
+      - smart_agents_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: smart-agents-frontend:latest
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - smart_agents_net
+
+volumes:
+  db_data:
+  minio_data:
+
+networks:
+  smart_agents_net:
+    driver: bridge
